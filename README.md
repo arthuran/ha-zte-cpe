@@ -7,7 +7,7 @@ The initial release focuses on radio quality, connection state, traffic counters
 ## Current features
 
 - UI setup through Config Flow
-- local polling every 30 seconds
+- adaptive local polling: 60s normally, 30s after meaningful radio/network changes, 120s when stable
 - LTE RSRP / RSRQ / SINR / band
 - 5G RSRP / SINR / band
 - signal bars
@@ -18,6 +18,17 @@ The initial release focuses on radio quality, connection state, traffic counters
 - firmware/model metadata in the HA device registry
 - privacy-conscious diagnostics
 - English and Thai setup strings
+
+## Adaptive polling
+
+The integration is designed to reduce continuous load on low-resource CPE hardware:
+
+- **60 seconds** under normal conditions
+- **30 seconds** temporarily after a meaningful band/channel/network-state change or a significant signal change
+- **120 seconds** after the connection remains stable for several polls
+- failures use exponential retry backoff: **120s → 240s → 480s → 900s maximum**
+
+Normal traffic-counter increments do not trigger fast polling, otherwise active traffic would keep the CPE at the fastest cadence indefinitely. The existing authenticated session is reused while valid instead of logging in on every poll.
 
 ## Compatibility
 

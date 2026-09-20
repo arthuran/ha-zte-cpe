@@ -89,7 +89,7 @@ class ZTECPEClient:
             headers={
                 "Referer": self.base + "/",
                 "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": "ha-zte-cpe/0.1.0",
+                "User-Agent": "ha-zte-cpe/0.1.1",
             },
         )
         try:
