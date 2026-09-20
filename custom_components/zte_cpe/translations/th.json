@@ -1,0 +1,26 @@
+{
+  "title": "ZTE CPE Monitor",
+  "config": {
+    "step": {
+      "user": {
+        "title": "เชื่อมต่อ ZTE CPE",
+        "description": "ใส่ URL หน้าแอดมินภายในเครือข่ายและรหัสผ่านของ ZTE CPE",
+        "data": {
+          "url": "Admin URL",
+          "password": "รหัสผ่าน"
+        },
+        "data_description": {
+          "url": "URL ของ Web UI ภายในเครือข่าย เช่น http://192.168.0.1",
+          "password": "รหัสผ่านผู้ดูแลระบบของ Web UI"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "ไม่สามารถเชื่อมต่อ CPE ได้",
+      "invalid_auth": "รหัสผ่านไม่ถูกต้อง"
+    },
+    "abort": {
+      "already_configured": "CPE เครื่องนี้ถูกเพิ่มไว้แล้ว"
+    }
+  }
+}

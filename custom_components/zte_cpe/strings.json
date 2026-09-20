@@ -1,0 +1,26 @@
+{
+  "title": "ZTE CPE Monitor",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to ZTE CPE",
+        "description": "Enter the local admin URL and password for your ZTE CPE.",
+        "data": {
+          "url": "Admin URL",
+          "password": "Password"
+        },
+        "data_description": {
+          "url": "Local Web UI URL, for example http://192.168.0.1.",
+          "password": "Administrator password used by the local Web UI."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the CPE",
+      "invalid_auth": "Invalid password"
+    },
+    "abort": {
+      "already_configured": "This CPE is already configured"
+    }
+  }
+}
