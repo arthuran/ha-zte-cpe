@@ -10,6 +10,7 @@ import hashlib
 import http.cookiejar
 import json
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +35,10 @@ TELEMETRY_FIELDS = [
     "realtime_tx_bytes", "realtime_rx_bytes", "realtime_tx_thrpt", "realtime_rx_thrpt",
     "monthly_tx_bytes", "monthly_rx_bytes", "monthly_time",
 ]
+
+SESSION_MAX_AGE_SECONDS = 8 * 60
+REAUTH_COOLDOWN_SECONDS = 5 * 60
+
 
 CAPABILITY_GROUPS = {
     "radio_lte": ["wan_active_channel", "wan_active_band", "lte_rsrp", "lte_rsrq", "lte_snr", "lte_pci"],
@@ -81,6 +86,8 @@ class ZTECPEClient:
         self.lock = threading.Lock()
         self.logged_in = False
         self.reauth_count = 0
+        self._last_login_monotonic: float | None = None
+        self._last_reauth_monotonic: float | None = None
         self._device_info_cache: dict[str, Any] | None = None
 
     def _request(
@@ -99,7 +106,7 @@ class ZTECPEClient:
             headers={
                 "Referer": self.base + "/",
                 "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": "ha-zte-cpe/0.1.5",
+                "User-Agent": "ha-zte-cpe/0.1.6",
             },
         )
         try:
@@ -130,6 +137,7 @@ class ZTECPEClient:
             if str(result.get("result")) != "0":
                 raise ZTECPEAuthError("Authentication failed")
             self.logged_in = True
+            self._last_login_monotonic = time.monotonic()
 
     def _ensure_login(self) -> None:
         if not self.logged_in:
@@ -138,6 +146,7 @@ class ZTECPEClient:
     def invalidate_session(self) -> None:
         """Forget local authentication state so the next request logs in again."""
         self.logged_in = False
+        self._last_login_monotonic = None
         self.jar.clear()
 
     def _reauthenticate(self) -> None:
@@ -145,6 +154,21 @@ class ZTECPEClient:
         self.invalidate_session()
         self.login()
         self.reauth_count += 1
+        self._last_reauth_monotonic = time.monotonic()
+
+    def _session_age_seconds(self) -> float | None:
+        if self._last_login_monotonic is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_login_monotonic)
+
+    def _should_proactively_refresh_session(self) -> bool:
+        age = self._session_age_seconds()
+        return self.logged_in and age is not None and age >= SESSION_MAX_AGE_SECONDS
+
+    def _can_reauth_for_degraded_session(self) -> bool:
+        if self._last_reauth_monotonic is None:
+            return True
+        return (time.monotonic() - self._last_reauth_monotonic) >= REAUTH_COOLDOWN_SECONDS
 
     def _authenticated_get(
         self,
@@ -192,6 +216,41 @@ class ZTECPEClient:
                 raw[field] = retry[field]
         return raw
 
+    @staticmethod
+    def _looks_like_degraded_session(
+        radio: dict[str, Any],
+        telemetry: dict[str, Any],
+    ) -> bool:
+        """Detect internally inconsistent data typical of a stale ZTE session."""
+        has = lambda value: value not in (None, "")
+        mode = str(radio.get("network_type") or "").upper()
+
+        # LTE anchor is clearly active but the corresponding band vanished.
+        if has(radio.get("lte_rsrp")) and not has(radio.get("wan_active_band")):
+            return True
+
+        # ENDC/NR mode claims 5G is active but both identifying NR fields vanished.
+        nr_expected = "ENDC" in mode or "5G" in mode or "NR" in mode
+        if nr_expected and (
+            not has(radio.get("nr5g_action_band"))
+            or not has(radio.get("Z5g_rsrp"))
+        ):
+            return True
+
+        # Traffic/session counters are still present while connection state fields
+        # disappeared; this is another partial-response signature seen on stale sessions.
+        telemetry_alive = any(
+            has(telemetry.get(field))
+            for field in ("realtime_time", "realtime_rx_bytes", "realtime_tx_bytes")
+        )
+        if telemetry_alive and (
+            not has(telemetry.get("wan_connect_status"))
+            or not has(telemetry.get("ppp_status"))
+        ):
+            return True
+
+        return False
+
     def validate(self) -> dict[str, Any]:
         """Validate credentials and return safe device metadata."""
         self.login()
@@ -219,6 +278,9 @@ class ZTECPEClient:
 
     def snapshot(self) -> dict[str, Any]:
         """Fetch coordinated radio and telemetry groups using small requests."""
+        if self._should_proactively_refresh_session():
+            self._reauthenticate()
+
         radio = self._get_with_targeted_retry(
             RADIO_FIELDS,
             (
@@ -233,6 +295,20 @@ class ZTECPEClient:
             TELEMETRY_FIELDS,
             ("wan_connect_status", "ppp_status"),
         )
+
+        if (
+            self._looks_like_degraded_session(radio, telemetry)
+            and self._can_reauth_for_degraded_session()
+        ):
+            self._reauthenticate()
+            radio = self._get_with_targeted_retry(
+                RADIO_FIELDS,
+                ("lte_rsrp", "wan_active_band", "network_type", "Z5g_rsrp", "nr5g_action_band"),
+            )
+            telemetry = self._get_with_targeted_retry(
+                TELEMETRY_FIELDS,
+                ("wan_connect_status", "ppp_status"),
+            )
 
         if not any(
             value not in (None, "")

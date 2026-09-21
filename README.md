@@ -36,6 +36,8 @@ Partial responses are also handled per field. If one value such as 5G RSRP is te
 
 Radio and telemetry are fetched as separate, smaller goform requests. If a critical radio/connection field is empty in an otherwise valid JSON response, the integration performs one targeted retry for only the missing field before falling back to stale-data handling.
 
+Persistent sessions are proactively renewed after **8 minutes** on the MC7010 legacy adapter, before the stale/degraded window observed in long-running Home Assistant polling. If a response becomes internally inconsistent (for example LTE RSRP is present while LTE Band disappears, or ENDC remains active while 5G identity fields vanish), the integration treats the session as degraded, re-authenticates once, and refetches the full radio/telemetry cycle. Reactive re-authentication is rate-limited to avoid auth loops during genuine radio changes.
+
 ## Compatibility
 
 The first adapter implements the `legacy-goform-ld` API family and has been tested against ZTE MC7010 firmware in that family. Other models using the same authentication and field names may work, but are not yet qualified.

@@ -17,6 +17,8 @@ class FakeClient(client_mod.ZTECPEClient):
         self.password = "dummy"
         self.base = "http://192.168.0.1"
         self.reauth_count = 0
+        self._last_login_monotonic = None
+        self._last_reauth_monotonic = None
         self._device_info_cache = None
         self.jar = __import__("http.cookiejar").cookiejar.CookieJar()
 
@@ -126,7 +128,8 @@ class SessionRecoveryTests(unittest.TestCase):
 
         client = EmptyOnceClient()
         snapshot = client.snapshot()
-        self.assertEqual(client.login_calls, 0)
+        self.assertEqual(client.login_calls, 1)
+        self.assertEqual(client.reauth_count, 1)
         self.assertEqual(snapshot["radio"]["lte_rsrp"], "-80")
 
 
@@ -227,3 +230,93 @@ class WholeSnapshotRecoveryTests(unittest.TestCase):
         self.assertEqual(client.login_calls, 1)
         self.assertEqual(snapshot["radio"]["lte_rsrp"], "-50")
         self.assertEqual(snapshot["telemetry"]["wan_connect_status"], "pdp_connected")
+
+
+class SessionLifecycleTests(unittest.TestCase):
+    def test_degraded_session_signature_triggers_one_reauth_and_full_refetch(self):
+        class DegradedClient(FakeClient):
+            def __init__(self):
+                super().__init__({
+                    "model_name": "MC_TEST",
+                    "hardware_version": "HW1",
+                    "wa_inner_version": "FW1",
+                    "web_version": "WEB1",
+                    "lte_rsrp": "-50",
+                    "wan_active_band": "LTE BAND 3",
+                    "network_type": "ENDC",
+                    "Z5g_rsrp": "-67",
+                    "nr5g_action_band": "n41",
+                    "wan_connect_status": "pdp_connected",
+                    "ppp_status": "ppp_connected",
+                    "realtime_time": "1234",
+                })
+                self.login_calls = 0
+                self.degraded = True
+                self._last_login_monotonic = 1.0
+                self._last_reauth_monotonic = None
+
+            def _get(self, fields):
+                result = super()._get(fields)
+                if self.degraded:
+                    if "wan_active_band" in fields:
+                        result["wan_active_band"] = ""
+                    if "nr5g_action_band" in fields:
+                        result["nr5g_action_band"] = ""
+                    if "Z5g_rsrp" in fields:
+                        result["Z5g_rsrp"] = ""
+                return result
+
+            def login(self):
+                self.login_calls += 1
+                self.logged_in = True
+                self._last_login_monotonic = __import__("time").monotonic()
+                self.degraded = False
+
+        client = DegradedClient()
+        snapshot = client.snapshot()
+        self.assertEqual(client.login_calls, 1)
+        self.assertEqual(client.reauth_count, 1)
+        self.assertEqual(snapshot["radio"]["wan_active_band"], "LTE BAND 3")
+        self.assertEqual(snapshot["radio"]["nr5g_action_band"], "n41")
+        self.assertEqual(snapshot["radio"]["Z5g_rsrp"], "-67")
+
+    def test_session_is_proactively_refreshed_before_observed_mc7010_degrade_window(self):
+        class AgingClient(FakeClient):
+            def __init__(self):
+                super().__init__({
+                    "model_name": "MC_TEST",
+                    "hardware_version": "HW1",
+                    "wa_inner_version": "FW1",
+                    "web_version": "WEB1",
+                    "lte_rsrp": "-50",
+                    "wan_active_band": "LTE BAND 3",
+                    "network_type": "ENDC",
+                    "Z5g_rsrp": "-67",
+                    "nr5g_action_band": "n41",
+                    "wan_connect_status": "pdp_connected",
+                    "ppp_status": "ppp_connected",
+                })
+                self.login_calls = 0
+                self._last_login_monotonic = __import__("time").monotonic() - client_mod.SESSION_MAX_AGE_SECONDS - 1
+                self._last_reauth_monotonic = None
+
+            def login(self):
+                self.login_calls += 1
+                self.logged_in = True
+                self._last_login_monotonic = __import__("time").monotonic()
+
+        client = AgingClient()
+        client.snapshot()
+        self.assertEqual(client.login_calls, 1)
+        self.assertEqual(client.reauth_count, 1)
+
+    def test_genuine_no_nr_mode_does_not_force_reauth(self):
+        radio = {
+            "lte_rsrp": "-55",
+            "wan_active_band": "LTE BAND 3",
+            "network_type": "LTE",
+            "Z5g_rsrp": "",
+            "nr5g_action_band": "",
+        }
+        telemetry = {"wan_connect_status": "pdp_connected", "ppp_status": "ppp_connected"}
+        self.assertFalse(client_mod.ZTECPEClient._looks_like_degraded_session(radio, telemetry))

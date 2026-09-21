@@ -56,6 +56,7 @@ class ZTECPECoordinator(DataUpdateCoordinator[dict]):
             "poll_interval_seconds": self.poll_interval_seconds,
             "last_success_at": self._last_success_at,
             "reauth_count": self.client.reauth_count,
+            "session_age_seconds": self.client._session_age_seconds(),
         }
         return result
 
