@@ -56,6 +56,9 @@ class ZTECPECoordinator(DataUpdateCoordinator[dict]):
         try:
             data = await self.hass.async_add_executor_job(self.client.snapshot)
         except ZTECPEClientError as exc:
+            # Never trust a cached Web UI session after a failed poll.  This
+            # guarantees the next retry performs a fresh challenge-response.
+            self.client.invalidate_session()
             self._failure_count += 1
             retry_after = failure_backoff_seconds(self._failure_count)
             raise UpdateFailed(str(exc), retry_after=retry_after) from exc

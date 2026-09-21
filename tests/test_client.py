@@ -64,3 +64,64 @@ class ClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionRecoveryTests(unittest.TestCase):
+    def test_snapshot_reauthenticates_after_expired_non_json_session(self):
+        class ExpiringClient(FakeClient):
+            def __init__(self):
+                super().__init__({
+                    "model_name": "MC_TEST",
+                    "hardware_version": "HW1",
+                    "wa_inner_version": "FW1",
+                    "web_version": "WEB1",
+                    "lte_rsrp": "-80",
+                    "network_type": "ENDC",
+                    "wan_connect_status": "pdp_connected",
+                })
+                self.fail_next_get = True
+                self.login_calls = 0
+                self.jar = __import__("http.cookiejar").cookiejar.CookieJar()
+
+            def _get(self, fields):
+                if self.fail_next_get:
+                    self.fail_next_get = False
+                    raise client_mod.ZTECPEClientError("ZTE CPE returned a non-JSON response")
+                return super()._get(fields)
+
+            def login(self):
+                self.login_calls += 1
+                self.logged_in = True
+
+        client = ExpiringClient()
+        snapshot = client.snapshot()
+        self.assertEqual(client.login_calls, 1)
+        self.assertEqual(snapshot["radio"]["lte_rsrp"], "-80")
+        self.assertTrue(client.logged_in)
+
+    def test_empty_expired_payload_also_triggers_reauthentication(self):
+        class EmptyOnceClient(FakeClient):
+            def __init__(self):
+                super().__init__({
+                    "model_name": "MC_TEST",
+                    "lte_rsrp": "-80",
+                    "network_type": "ENDC",
+                })
+                self.empty_once = True
+                self.login_calls = 0
+                self.jar = __import__("http.cookiejar").cookiejar.CookieJar()
+
+            def _get(self, fields):
+                if self.empty_once:
+                    self.empty_once = False
+                    return {field: "" for field in fields}
+                return super()._get(fields)
+
+            def login(self):
+                self.login_calls += 1
+                self.logged_in = True
+
+        client = EmptyOnceClient()
+        snapshot = client.snapshot()
+        self.assertEqual(client.login_calls, 1)
+        self.assertEqual(snapshot["radio"]["lte_rsrp"], "-80")

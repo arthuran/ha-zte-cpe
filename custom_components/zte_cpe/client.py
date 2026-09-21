@@ -89,7 +89,7 @@ class ZTECPEClient:
             headers={
                 "Referer": self.base + "/",
                 "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": "ha-zte-cpe/0.1.1",
+                "User-Agent": "ha-zte-cpe/0.1.2",
             },
         )
         try:
@@ -125,14 +125,48 @@ class ZTECPEClient:
         if not self.logged_in:
             self.login()
 
+    def invalidate_session(self) -> None:
+        """Forget local authentication state so the next request logs in again."""
+        self.logged_in = False
+        self.jar.clear()
+
+    def _authenticated_get(
+        self,
+        fields: list[str],
+        meaningful_fields: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Read fields and recover once if the CPE session expired.
+
+        Some ZTE firmware returns the login page (non-JSON) after its Web UI
+        session expires.  Keeping only a local ``logged_in`` boolean would
+        otherwise leave the integration stuck until it was manually reloaded.
+        """
+        self._ensure_login()
+        try:
+            raw = self._get(fields)
+        except ZTECPEClientError:
+            self.invalidate_session()
+            self.login()
+            return self._get(fields)
+
+        if meaningful_fields and not any(
+            raw.get(field) not in (None, "") for field in meaningful_fields
+        ):
+            self.invalidate_session()
+            self.login()
+            return self._get(fields)
+        return raw
+
     def validate(self) -> dict[str, Any]:
         """Validate credentials and return safe device metadata."""
         self.login()
         return self.device_info()
 
     def device_info(self) -> dict[str, Any]:
-        self._ensure_login()
-        raw = self._get(DEVICE_INFO_FIELDS)
+        raw = self._authenticated_get(
+            DEVICE_INFO_FIELDS,
+            ("model_name", "product_name", "device_name"),
+        )
         model = raw.get("model_name") or raw.get("product_name") or raw.get("device_name") or "ZTE CPE"
         return {
             "model": model,
@@ -144,7 +178,6 @@ class ZTECPEClient:
 
     def snapshot(self) -> dict[str, Any]:
         """Fetch all data required by Home Assistant in coordinated requests."""
-        self._ensure_login()
         fields = []
         for field in RADIO_FIELDS + TELEMETRY_FIELDS:
             if field not in fields:
@@ -154,11 +187,10 @@ class ZTECPEClient:
                 if field not in fields:
                     fields.append(field)
 
-        raw = self._get(fields)
-        if not any(raw.get(key) not in (None, "") for key in ("lte_rsrp", "Z5g_rsrp", "network_type")):
-            self.logged_in = False
-            self.login()
-            raw = self._get(fields)
+        raw = self._authenticated_get(
+            fields,
+            ("lte_rsrp", "Z5g_rsrp", "network_type"),
+        )
 
         capabilities: dict[str, str] = {}
         for name, group in CAPABILITY_GROUPS.items():
