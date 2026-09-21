@@ -34,6 +34,8 @@ Transient request failures are tolerated for two polling cycles: Home Assistant 
 
 Partial responses are also handled per field. If one value such as 5G RSRP is temporarily empty while the rest of the poll succeeds, its last-known value is retained for up to three successful polls and that entity reports `data_stale: true`. If the field remains empty beyond that grace window, it becomes unavailable normally so stale radio data is never retained indefinitely.
 
+Radio and telemetry are fetched as separate, smaller goform requests. If a critical radio/connection field is empty in an otherwise valid JSON response, the integration performs one targeted retry for only the missing field before falling back to stale-data handling.
+
 ## Compatibility
 
 The first adapter implements the `legacy-goform-ld` API family and has been tested against ZTE MC7010 firmware in that family. Other models using the same authentication and field names may work, but are not yet qualified.

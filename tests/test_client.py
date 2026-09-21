@@ -126,5 +126,104 @@ class SessionRecoveryTests(unittest.TestCase):
 
         client = EmptyOnceClient()
         snapshot = client.snapshot()
-        self.assertEqual(client.login_calls, 1)
+        self.assertEqual(client.login_calls, 0)
         self.assertEqual(snapshot["radio"]["lte_rsrp"], "-80")
+
+
+class PartialFieldRetryTests(unittest.TestCase):
+    def test_missing_critical_radio_field_is_retried_targetedly(self):
+        class PartialClient(FakeClient):
+            def __init__(self):
+                super().__init__({
+                    "model_name": "MC_TEST",
+                    "hardware_version": "HW1",
+                    "wa_inner_version": "FW1",
+                    "web_version": "WEB1",
+                    "lte_rsrp": "-50",
+                    "wan_active_band": "LTE BAND 3",
+                    "network_type": "ENDC",
+                    "Z5g_rsrp": "-67",
+                    "nr5g_action_band": "n41",
+                    "wan_connect_status": "pdp_connected",
+                    "ppp_status": "ppp_connected",
+                })
+                self.calls = []
+                self.first_radio = True
+
+            def _get(self, fields):
+                self.calls.append(tuple(fields))
+                result = super()._get(fields)
+                if self.first_radio and "Z5g_rsrp" in fields and len(fields) > 1:
+                    self.first_radio = False
+                    result["Z5g_rsrp"] = ""
+                return result
+
+        client = PartialClient()
+        snapshot = client.snapshot()
+        self.assertEqual(snapshot["radio"]["Z5g_rsrp"], "-67")
+        self.assertIn(("Z5g_rsrp",), client.calls)
+
+    def test_snapshot_uses_separate_radio_and_telemetry_requests(self):
+        class RecordingClient(FakeClient):
+            def __init__(self):
+                super().__init__({
+                    "model_name": "MC_TEST",
+                    "hardware_version": "HW1",
+                    "wa_inner_version": "FW1",
+                    "web_version": "WEB1",
+                    "lte_rsrp": "-50",
+                    "wan_active_band": "LTE BAND 3",
+                    "network_type": "ENDC",
+                    "Z5g_rsrp": "-67",
+                    "nr5g_action_band": "n41",
+                    "wan_connect_status": "pdp_connected",
+                    "ppp_status": "ppp_connected",
+                })
+                self.calls = []
+
+            def _get(self, fields):
+                self.calls.append(tuple(fields))
+                return super()._get(fields)
+
+        client = RecordingClient()
+        client.snapshot()
+        self.assertIn(tuple(client_mod.RADIO_FIELDS), client.calls)
+        self.assertIn(tuple(client_mod.TELEMETRY_FIELDS), client.calls)
+        self.assertNotIn(tuple(client_mod.RADIO_FIELDS + client_mod.TELEMETRY_FIELDS), client.calls)
+
+
+class WholeSnapshotRecoveryTests(unittest.TestCase):
+    def test_completely_empty_snapshot_reauthenticates_once(self):
+        class EmptySnapshotClient(FakeClient):
+            def __init__(self):
+                super().__init__({
+                    "model_name": "MC_TEST",
+                    "hardware_version": "HW1",
+                    "wa_inner_version": "FW1",
+                    "web_version": "WEB1",
+                    "lte_rsrp": "-50",
+                    "wan_active_band": "LTE BAND 3",
+                    "network_type": "ENDC",
+                    "Z5g_rsrp": "-67",
+                    "nr5g_action_band": "n41",
+                    "wan_connect_status": "pdp_connected",
+                    "ppp_status": "ppp_connected",
+                })
+                self.login_calls = 0
+                self.empty_groups_remaining = 4
+
+            def _get(self, fields):
+                if self.empty_groups_remaining > 0:
+                    self.empty_groups_remaining -= 1
+                    return {field: "" for field in fields}
+                return super()._get(fields)
+
+            def login(self):
+                self.login_calls += 1
+                self.logged_in = True
+
+        client = EmptySnapshotClient()
+        snapshot = client.snapshot()
+        self.assertEqual(client.login_calls, 1)
+        self.assertEqual(snapshot["radio"]["lte_rsrp"], "-50")
+        self.assertEqual(snapshot["telemetry"]["wan_connect_status"], "pdp_connected")

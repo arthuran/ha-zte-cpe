@@ -99,7 +99,7 @@ class ZTECPEClient:
             headers={
                 "Referer": self.base + "/",
                 "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": "ha-zte-cpe/0.1.4",
+                "User-Agent": "ha-zte-cpe/0.1.5",
             },
         )
         try:
@@ -164,11 +164,32 @@ class ZTECPEClient:
             self._reauthenticate()
             return self._get(fields)
 
-        if meaningful_fields and not any(
-            raw.get(field) not in (None, "") for field in meaningful_fields
-        ):
-            self._reauthenticate()
-            return self._get(fields)
+        return raw
+
+    def _get_with_targeted_retry(
+        self,
+        fields: list[str],
+        critical_fields: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Fetch a field group and retry only critical fields that came back empty.
+
+        Some legacy ZTE firmware intermittently returns a valid JSON response with
+        one or more fields empty.  Retrying only the missing critical fields keeps
+        request size small and avoids turning a partial modem response into an
+        unavailable Home Assistant entity.
+        """
+        raw = self._authenticated_get(fields, critical_fields)
+        missing = [
+            field for field in critical_fields
+            if raw.get(field) in (None, "")
+        ]
+        if not missing:
+            return raw
+
+        retry = self._authenticated_get(missing)
+        for field in missing:
+            if retry.get(field) not in (None, ""):
+                raw[field] = retry[field]
         return raw
 
     def validate(self) -> dict[str, Any]:
@@ -197,24 +218,50 @@ class ZTECPEClient:
         return dict(self._device_info_cache)
 
     def snapshot(self) -> dict[str, Any]:
-        """Fetch all data required by Home Assistant in coordinated requests."""
-        fields = []
-        for field in RADIO_FIELDS + TELEMETRY_FIELDS + DEVICE_INFO_FIELDS:
-            if field not in fields:
-                fields.append(field)
-        for group in CAPABILITY_GROUPS.values():
-            for field in group:
-                if field not in fields:
-                    fields.append(field)
-
-        raw = self._authenticated_get(
-            fields,
-            ("lte_rsrp", "Z5g_rsrp", "network_type"),
+        """Fetch coordinated radio and telemetry groups using small requests."""
+        radio = self._get_with_targeted_retry(
+            RADIO_FIELDS,
+            (
+                "lte_rsrp",
+                "wan_active_band",
+                "network_type",
+                "Z5g_rsrp",
+                "nr5g_action_band",
+            ),
+        )
+        telemetry = self._get_with_targeted_retry(
+            TELEMETRY_FIELDS,
+            ("wan_connect_status", "ppp_status"),
         )
 
-        if self._device_info_cache is None:
-            self._device_info_cache = self._device_info_from_raw(raw)
+        if not any(
+            value not in (None, "")
+            for value in (
+                radio.get("lte_rsrp"),
+                radio.get("Z5g_rsrp"),
+                radio.get("network_type"),
+                telemetry.get("wan_connect_status"),
+                telemetry.get("ppp_status"),
+            )
+        ):
+            self._reauthenticate()
+            radio = self._get_with_targeted_retry(
+                RADIO_FIELDS,
+                ("lte_rsrp", "wan_active_band", "network_type", "Z5g_rsrp", "nr5g_action_band"),
+            )
+            telemetry = self._get_with_targeted_retry(
+                TELEMETRY_FIELDS,
+                ("wan_connect_status", "ppp_status"),
+            )
 
+        if self._device_info_cache is None:
+            info_raw = self._authenticated_get(
+                DEVICE_INFO_FIELDS,
+                ("model_name", "product_name", "device_name"),
+            )
+            self._device_info_cache = self._device_info_from_raw(info_raw)
+
+        raw = {**radio, **telemetry}
         capabilities: dict[str, str] = {}
         for name, group in CAPABILITY_GROUPS.items():
             present = [field for field in group if field in raw]
@@ -223,7 +270,7 @@ class ZTECPEClient:
 
         return {
             "device": dict(self._device_info_cache),
-            "radio": {field: raw.get(field, "") for field in RADIO_FIELDS},
-            "telemetry": {field: raw.get(field, "") for field in TELEMETRY_FIELDS},
+            "radio": {field: radio.get(field, "") for field in RADIO_FIELDS},
+            "telemetry": {field: telemetry.get(field, "") for field in TELEMETRY_FIELDS},
             "capabilities": capabilities,
         }
