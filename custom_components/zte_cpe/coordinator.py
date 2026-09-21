@@ -11,6 +11,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .client import ZTECPEClient, ZTECPEClientError
 from .const import DOMAIN
+from .field_state import merge_snapshot_fields
 from .polling import (
     NORMAL_INTERVAL,
     TRANSIENT_FAILURE_GRACE,
@@ -36,6 +37,8 @@ class ZTECPECoordinator(DataUpdateCoordinator[dict]):
         )
         self.client = client
         self._last_good_snapshot: dict | None = None
+        self._field_miss_counts: dict[str, int] = {}
+        self._stale_fields: set[str] = set()
         self._stable_polls = 0
         self._failure_count = 0
         self._last_success_at: str | None = None
@@ -43,8 +46,12 @@ class ZTECPECoordinator(DataUpdateCoordinator[dict]):
 
     def _with_health(self, data: dict, *, stale: bool) -> dict:
         result = dict(data)
+        stale_fields = sorted(self._stale_fields)
         result["health"] = {
-            "stale": stale,
+            "stale": stale or bool(stale_fields),
+            "partial_stale": bool(stale_fields),
+            "stale_fields": stale_fields,
+            "stale_field_count": len(stale_fields),
             "consecutive_failures": self._failure_count,
             "poll_interval_seconds": self.poll_interval_seconds,
             "last_success_at": self._last_success_at,
@@ -53,19 +60,26 @@ class ZTECPECoordinator(DataUpdateCoordinator[dict]):
         return result
 
     def _record_success(self, data: dict) -> dict:
-        interval, stable_polls = next_success_interval(
+        merged, miss_counts, stale_fields = merge_snapshot_fields(
             self._last_good_snapshot,
             data,
+            self._field_miss_counts,
+        )
+        interval, stable_polls = next_success_interval(
+            self._last_good_snapshot,
+            merged,
             self._stable_polls,
             self.poll_interval_seconds,
         )
+        self._field_miss_counts = miss_counts
+        self._stale_fields = stale_fields
         self._stable_polls = stable_polls
         self._failure_count = 0
-        self._last_good_snapshot = data
+        self._last_good_snapshot = merged
         self._last_success_at = datetime.now(timezone.utc).isoformat()
         self.poll_interval_seconds = interval
         self.update_interval = timedelta(seconds=interval)
-        return self._with_health(data, stale=False)
+        return self._with_health(merged, stale=False)
 
     async def _async_update_data(self) -> dict:
         try:

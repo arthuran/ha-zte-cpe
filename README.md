@@ -32,6 +32,8 @@ Normal traffic-counter increments do not trigger fast polling, otherwise active 
 
 Transient request failures are tolerated for two polling cycles: Home Assistant keeps the last-known values and exposes `Data Fresh` as off instead of immediately marking every entity unavailable. A persistent failure still becomes unavailable after the grace period. Expired Web UI sessions are automatically re-authenticated.
 
+Partial responses are also handled per field. If one value such as 5G RSRP is temporarily empty while the rest of the poll succeeds, its last-known value is retained for up to three successful polls and that entity reports `data_stale: true`. If the field remains empty beyond that grace window, it becomes unavailable normally so stale radio data is never retained indefinitely.
+
 ## Compatibility
 
 The first adapter implements the `legacy-goform-ld` API family and has been tested against ZTE MC7010 firmware in that family. Other models using the same authentication and field names may work, but are not yet qualified.

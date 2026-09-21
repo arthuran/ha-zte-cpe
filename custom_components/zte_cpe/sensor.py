@@ -95,6 +95,12 @@ class ZTECPESensor(CoordinatorEntity[ZTECPECoordinator], SensorEntity):
         return super().available and self.native_value is not None
 
     @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        path = f"{self.entity_description.section}.{self.entity_description.field}"
+        stale_fields = self.coordinator.data.get("health", {}).get("stale_fields", [])
+        return {"data_stale": path in stale_fields}
+
+    @property
     def device_info(self) -> DeviceInfo:
         device = self.coordinator.data.get("device", {})
         return DeviceInfo(
