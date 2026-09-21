@@ -30,6 +30,8 @@ The integration is designed to reduce continuous load on low-resource CPE hardwa
 
 Normal traffic-counter increments do not trigger fast polling, otherwise active traffic would keep the CPE at the fastest cadence indefinitely. The existing authenticated session is reused while valid instead of logging in on every poll.
 
+Transient request failures are tolerated for two polling cycles: Home Assistant keeps the last-known values and exposes `Data Fresh` as off instead of immediately marking every entity unavailable. A persistent failure still becomes unavailable after the grace period. Expired Web UI sessions are automatically re-authenticated.
+
 ## Compatibility
 
 The first adapter implements the `legacy-goform-ld` API family and has been tested against ZTE MC7010 firmware in that family. Other models using the same authentication and field names may work, but are not yet qualified.

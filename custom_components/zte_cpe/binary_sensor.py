@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorEntityDescription
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity, BinarySensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
@@ -14,6 +14,7 @@ from .coordinator import ZTECPECoordinator
 
 
 BINARY_SENSORS = (
+    BinarySensorEntityDescription(key="data_fresh", name="Data Fresh", device_class=BinarySensorDeviceClass.CONNECTIVITY),
     BinarySensorEntityDescription(key="wan_connected", name="WAN Connected"),
     BinarySensorEntityDescription(key="ppp_connected", name="PPP Connected"),
 )
@@ -33,10 +34,14 @@ class ZTECPEBinarySensor(CoordinatorEntity[ZTECPECoordinator], BinarySensorEntit
 
     @property
     def is_on(self) -> bool:
+        if self.entity_description.key == "data_fresh":
+            return not self.coordinator.data.get("health", {}).get("stale", False)
         telemetry = self.coordinator.data.get("telemetry", {})
         if self.entity_description.key == "wan_connected":
             return telemetry.get("wan_connect_status") == "pdp_connected"
-        return telemetry.get("ppp_status") == "ppp_connected"
+        if self.entity_description.key == "ppp_connected":
+            return telemetry.get("ppp_status") == "ppp_connected"
+        return False
 
     @property
     def device_info(self) -> DeviceInfo:

@@ -7,6 +7,6 @@
   "issue_tracker": "https://github.com/arthuran/ha-zte-cpe/issues",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "requirements": []
 }

@@ -57,6 +57,14 @@ class ZTECPEAuthError(ZTECPEClientError):
     """Authentication failed."""
 
 
+class ZTECPETransportError(ZTECPEClientError):
+    """Transport-level request failure."""
+
+
+class ZTECPEProtocolError(ZTECPEClientError):
+    """Unexpected/non-JSON protocol response."""
+
+
 def _sha256_upper(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
 
@@ -72,6 +80,8 @@ class ZTECPEClient:
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
         self.lock = threading.Lock()
         self.logged_in = False
+        self.reauth_count = 0
+        self._device_info_cache: dict[str, Any] | None = None
 
     def _request(
         self,
@@ -89,16 +99,16 @@ class ZTECPEClient:
             headers={
                 "Referer": self.base + "/",
                 "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": "ha-zte-cpe/0.1.2",
+                "User-Agent": "ha-zte-cpe/0.1.3",
             },
         )
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
                 return json.loads(response.read().decode("utf-8", "replace"))
-        except urllib.error.URLError as exc:
-            raise ZTECPEClientError(f"Unable to reach ZTE CPE: {exc}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise ZTECPETransportError(f"Unable to reach ZTE CPE: {exc}") from exc
         except json.JSONDecodeError as exc:
-            raise ZTECPEClientError("ZTE CPE returned a non-JSON response") from exc
+            raise ZTECPEProtocolError("ZTE CPE returned a non-JSON response") from exc
 
     def _get(self, fields: list[str]) -> dict[str, Any]:
         return self._request(
@@ -130,6 +140,12 @@ class ZTECPEClient:
         self.logged_in = False
         self.jar.clear()
 
+    def _reauthenticate(self) -> None:
+        """Start a fresh Web UI session after a protocol-level expiry."""
+        self.invalidate_session()
+        self.login()
+        self.reauth_count += 1
+
     def _authenticated_get(
         self,
         fields: list[str],
@@ -144,16 +160,14 @@ class ZTECPEClient:
         self._ensure_login()
         try:
             raw = self._get(fields)
-        except ZTECPEClientError:
-            self.invalidate_session()
-            self.login()
+        except ZTECPEProtocolError:
+            self._reauthenticate()
             return self._get(fields)
 
         if meaningful_fields and not any(
             raw.get(field) not in (None, "") for field in meaningful_fields
         ):
-            self.invalidate_session()
-            self.login()
+            self._reauthenticate()
             return self._get(fields)
         return raw
 
@@ -162,11 +176,7 @@ class ZTECPEClient:
         self.login()
         return self.device_info()
 
-    def device_info(self) -> dict[str, Any]:
-        raw = self._authenticated_get(
-            DEVICE_INFO_FIELDS,
-            ("model_name", "product_name", "device_name"),
-        )
+    def _device_info_from_raw(self, raw: dict[str, Any]) -> dict[str, Any]:
         model = raw.get("model_name") or raw.get("product_name") or raw.get("device_name") or "ZTE CPE"
         return {
             "model": model,
@@ -176,10 +186,20 @@ class ZTECPEClient:
             "api_adapter": "legacy-goform-ld",
         }
 
+    def device_info(self) -> dict[str, Any]:
+        if self._device_info_cache is not None:
+            return dict(self._device_info_cache)
+        raw = self._authenticated_get(
+            DEVICE_INFO_FIELDS,
+            ("model_name", "product_name", "device_name"),
+        )
+        self._device_info_cache = self._device_info_from_raw(raw)
+        return dict(self._device_info_cache)
+
     def snapshot(self) -> dict[str, Any]:
         """Fetch all data required by Home Assistant in coordinated requests."""
         fields = []
-        for field in RADIO_FIELDS + TELEMETRY_FIELDS:
+        for field in RADIO_FIELDS + TELEMETRY_FIELDS + DEVICE_INFO_FIELDS:
             if field not in fields:
                 fields.append(field)
         for group in CAPABILITY_GROUPS.values():
@@ -192,6 +212,9 @@ class ZTECPEClient:
             ("lte_rsrp", "Z5g_rsrp", "network_type"),
         )
 
+        if self._device_info_cache is None:
+            self._device_info_cache = self._device_info_from_raw(raw)
+
         capabilities: dict[str, str] = {}
         for name, group in CAPABILITY_GROUPS.items():
             present = [field for field in group if field in raw]
@@ -199,7 +222,7 @@ class ZTECPEClient:
             capabilities[name] = "available" if nonempty else ("present-empty" if present else "unavailable")
 
         return {
-            "device": self.device_info(),
+            "device": dict(self._device_info_cache),
             "radio": {field: raw.get(field, "") for field in RADIO_FIELDS},
             "telemetry": {field: raw.get(field, "") for field in TELEMETRY_FIELDS},
             "capabilities": capabilities,

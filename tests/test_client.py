@@ -16,6 +16,9 @@ class FakeClient(client_mod.ZTECPEClient):
         self.logged_in = True
         self.password = "dummy"
         self.base = "http://192.168.0.1"
+        self.reauth_count = 0
+        self._device_info_cache = None
+        self.jar = __import__("http.cookiejar").cookiejar.CookieJar()
 
     def _get(self, fields):
         result = {}
@@ -86,7 +89,7 @@ class SessionRecoveryTests(unittest.TestCase):
             def _get(self, fields):
                 if self.fail_next_get:
                     self.fail_next_get = False
-                    raise client_mod.ZTECPEClientError("ZTE CPE returned a non-JSON response")
+                    raise client_mod.ZTECPEProtocolError("ZTE CPE returned a non-JSON response")
                 return super()._get(fields)
 
             def login(self):
